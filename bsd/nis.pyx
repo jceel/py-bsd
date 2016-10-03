@@ -46,7 +46,7 @@ cdef class NIS(object):
             raise OSError(rv, strerror(rv))
         
         fields = pw_ent.decode('utf-8').split(":")
-	free(pw_ent)
+        free(pw_ent)
         if fields:
             retval.pw_name = fields[0]
             retval.pw_passwd = fields[1]
