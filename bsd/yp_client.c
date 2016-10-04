@@ -14,6 +14,7 @@
 
 #include <ypclnt.h>
 #include <rpcsvc/yp.h>
+#include <rpcsvc/ypclnt.h>
 
 typedef struct yp_context {
 	char	*domain;
@@ -161,7 +162,7 @@ check_yp_client(yp_context_t *ctx)
 }
 
 void *
-yp_init(const char *domain, const char *server)
+yp_client_init(const char *domain, const char *server)
 {
 	void *retval = NULL;
 	yp_context_t *context = NULL;
@@ -232,7 +233,7 @@ done:
 }
 
 void
-yp_close(void *ctx)
+yp_client_close(void *ctx)
 {
 	yp_context_t *context = ctx;
 
@@ -246,10 +247,10 @@ yp_close(void *ctx)
 }
 
 int
-yp_match_r(void *ctx,
-	   const char *inmap,
-	   const char *inkey, size_t inkeylen,
-	   const char **outval, size_t *outvallen)
+yp_client_match(void *ctx,
+		const char *inmap,
+		const char *inkey, size_t inkeylen,
+		const char **outval, size_t *outvallen)
 {
 	yp_context_t *context = ctx;
         struct ypresp_val yprv = { 0 };
@@ -279,7 +280,7 @@ yp_match_r(void *ctx,
 		char *tmp;
 
 		tmp_len = yprv.val.valdat_len;
-		tmp = calloc(1, tmp_len);
+		tmp = calloc(1, tmp_len+1);
 		if (tmp) {
 			bcopy(yprv.val.valdat_val, tmp, tmp_len);
 			tmp[tmp_len] = 0;
@@ -293,12 +294,13 @@ yp_match_r(void *ctx,
 }
 
 int
-yp_first_r(void *ctx,
-	   const char *inmap,
-	   const char **outval, size_t *outvallen)
+yp_client_first(void *ctx,
+		const char *inmap,
+		const char **outkey, size_t *outkeylen,
+		const char **outval, size_t *outvallen)
 {
 	yp_context_t *context = ctx;
-        struct ypresp_val yprv = { 0 };
+        struct ypresp_key_val yprkv = { 0 };
 	struct timeval tv = { .tv_sec = 5, };
 	struct ypreq_key yprk = { };
 	int rv;
@@ -314,37 +316,54 @@ yp_first_r(void *ctx,
 
 	rv = clnt_call(context->client, YPPROC_FIRST,
 		       (xdrproc_t)xdr_ypreq_nokey, &yprk,
-		       (xdrproc_t)xdr_ypresp_val, &yprv, tv);
+		       (xdrproc_t)xdr_ypresp_key_val, &yprkv, tv);
 	if (rv != RPC_SUCCESS) {
 		warnx("YPPROC_FIRST failed with %d", rv);
-	} else {
+	} else if (ypprot_err(yprkv.stat) == 0) {
 		size_t tmp_len;
 		char *tmp;
 
-		tmp_len = yprv.val.valdat_len;
-		tmp = calloc(1, tmp_len);
+		tmp_len = yprkv.key.keydat_len;
+		tmp = calloc(1, tmp_len+1);
 		if (tmp) {
-			bcopy(yprv.val.valdat_val, tmp, tmp_len);
+			bcopy(yprkv.key.keydat_val, tmp, tmp_len);
 			tmp[tmp_len] = 0;
-			*outvallen = tmp_len;
-			*outval = tmp;
+			*outkey = tmp;
+			*outkeylen = tmp_len;
+			
+
+			tmp_len = yprkv.val.valdat_len;
+			tmp = calloc(1, tmp_len+1);
+			if (tmp) {
+				bcopy(yprkv.val.valdat_val, tmp, tmp_len);
+				tmp[tmp_len] = 0;
+				*outvallen = tmp_len;
+				*outval = tmp;
+				rv = 0;
+			} else {
+				free((void*)*outkey);
+				*outkey = NULL;
+				rv = ENOMEM;
+			}
+		} else {
+			rv = ENOMEM;
 		}
-		xdr_free((xdrproc_t)xdr_ypresp_val, &yprv);
-		rv = 0;
+		xdr_free((xdrproc_t)xdr_ypresp_val, &yprkv);
 	}
 	return rv;
 }
 
 int
-yp_next_r(void *ctx,
-	   const char *inmap,
-	   const char *inkey, size_t inkeylen,
-	   const char **outval, size_t *outvallen)
+yp_client_next(void *ctx,
+	       const char *inmap,
+	       const char *inkey, size_t inkeylen,
+	       const char **outkey, size_t *outkeylen,
+	       const char **outval, size_t *outvallen)
 {
 	yp_context_t *context = ctx;
-        struct ypresp_val yprv = { 0 };
+	struct ypresp_key_val yprkv = { 0 };
+	struct ypreq_key yprk = { 0 };
 	struct timeval tv = { .tv_sec = 5, };
-	struct ypreq_key yprk;
 	int rv;
 	
 	if (ctx == NULL)
@@ -361,23 +380,48 @@ yp_next_r(void *ctx,
 
 	rv = clnt_call(context->client, YPPROC_NEXT,
 		       (xdrproc_t)xdr_ypreq_key, &yprk,
-		       (xdrproc_t)xdr_ypresp_val, &yprv, tv);
+		       (xdrproc_t)xdr_ypresp_key_val, &yprkv, tv);
 	if (rv != RPC_SUCCESS) {
 		warnx("YPPROC_MATCH failed with %d", rv);
-	} else {
+	} else if (ypprot_err(yprkv.stat) == 0) {
 		size_t tmp_len;
 		char *tmp;
 
-		tmp_len = yprv.val.valdat_len;
-		tmp = calloc(1, tmp_len);
+		tmp_len = yprkv.key.keydat_len;
+		tmp = calloc(1, tmp_len+1);
 		if (tmp) {
-			bcopy(yprv.val.valdat_val, tmp, tmp_len);
+			bcopy(yprkv.key.keydat_val, tmp, tmp_len);
 			tmp[tmp_len] = 0;
-			*outvallen = tmp_len;
-			*outval = tmp;
+			*outkey = tmp;
+			*outkeylen = tmp_len;
+			
+
+			tmp_len = yprkv.val.valdat_len;
+			tmp = calloc(1, tmp_len+1);
+			if (tmp) {
+				bcopy(yprkv.val.valdat_val, tmp, tmp_len);
+				tmp[tmp_len] = 0;
+				*outvallen = tmp_len;
+				*outval = tmp;
+				rv = 0;
+			} else {
+				free((void*)*outkey);
+				*outkey = NULL;
+				rv = ENOMEM;
+			}
+		} else {
+			rv = ENOMEM;
 		}
-		xdr_free((xdrproc_t)xdr_ypresp_val, &yprv);
-		rv = 0;
+		xdr_free((xdrproc_t)xdr_ypresp_val, &yprkv);
+	} else {
+		rv = ypprot_err(yprkv.stat);
+		switch (rv) {
+		case YPERR_NOMORE:
+			rv = ENOENT;
+			break;
+		default:
+			rv = EINVAL;
+		}
 	}
 	return rv;
 }
@@ -400,22 +444,42 @@ main(int ac, char **av)
 	if (ac > 4)
 		errx(1, "Usage: %s [domain [server [user]]]", av[0]);
 
-	ctx = yp_init(domain, server);
+	ctx = yp_client_init(domain, server);
 	if (ctx == NULL)
 		err(1, "Could not create YP context");
 	else {
 		const char *map = "passwd.byname";
 		const char *out_val;
-		size_t out_len;
+		const char *first_key = NULL, *next_key = NULL;
+		size_t first_keylen, next_keylen, out_len;
 		int x;
 
-		x = yp_match_r(ctx, map, user, strlen(user), 
-			       &out_val, &out_len);
+		x = yp_client_match(ctx, map, user, strlen(user), 
+				    &out_val, &out_len);
 		if (x == 0) {
 			printf("got %s\n", out_val);
 		} else {
 			warnc(x, "Returned %d", x);
 		}
+		printf("Now trying yp_client_first/yp_client_next\n");
+		for (x = yp_client_first(ctx, map,
+					 &next_key, &next_keylen,
+					 &out_val, &out_len);
+		     x == 0;
+		     x =  yp_client_next(ctx, map,
+					 first_key, first_keylen,
+					 &next_key, &next_keylen,
+					 &out_val, &out_len))
+		{
+			printf("x = %d, first_key = `%s', out_val = `%s'\n",
+			       x, first_key, out_val);
+			free((void*)first_key);
+			free((void*)out_val);
+			first_key = next_key;
+			first_keylen = next_keylen;
+			next_key = NULL;
+		}
+		printf("x = %d\n", x);
 	}
 	return 0;
 }
