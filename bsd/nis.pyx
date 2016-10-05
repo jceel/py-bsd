@@ -115,28 +115,24 @@ cdef class NIS(object):
             return retval
         raise OSError(ENOENT, "Cannot find key {} in map {}".format(keyvalue, mapname))
         
-    def getpwent(self):
+    def _get_entries(self, mapname, cracker):
         """
-        This is slightly different from the libc routine.
-        We simply call yp_client_first() for the proper map, and then
+        Generic function to get multiple entries (e.g., getpwent and getgrent).
+        This is slightly different from the libc routines, in that
+        we simply call yp_client_first() for the proper map, and then
         yield results until yp_client_next() returns an error.
         """
         cdef const char *first_key = NULL
         cdef const char *next_key = NULL
         cdef const char *out_value = NULL
         cdef size_t first_keylen, next_keylen, out_len
-        
-        if os.geteuid() == 0:
-            mapname = "master.passwd.byname"
-        else:
-            mapname = "passwd.byname"
 
         try:
             rv = yp_client_first(self.ctx, mapname,
                                  &next_key, &next_keylen,
                                  &out_value, &out_len)
             while rv == 0:
-                retval = _make_pw(out_value.decode('utf-8'))
+                retval = cracker(out_value.decode('utf-8'))
                 free(<void*>out_value)
                 free(<void*>first_key)
                 first_key = next_key
@@ -153,7 +149,14 @@ cdef class NIS(object):
                 free(<void*>first_key)
             if next_key:
                 free(<void*>next_key)
-    
+
+    def getpwent(self):
+        if os.geteuid() == 0:
+            mapname = "master.passwd.byname"
+        else:
+            mapname = "passwd.byname"
+
+        return self._get_entries(mapname, _make_pw)
             
     def getpwnam(self, name):
         if os.geteuid() == 0:
@@ -194,39 +197,7 @@ cdef class NIS(object):
         return self._getgr("group.bygid", str(guid))
     
     def getgrent(self):
-        """
-        This is slightly different from the libc routine.
-        We simply call yp_client_first() for the proper map, and then
-        yield results until yp_client_next() returns an error.
-        """
-        cdef const char *first_key = NULL
-        cdef const char *next_key = NULL
-        cdef const char *out_value = NULL
-        cdef size_t first_keylen, next_keylen, out_len
-        
-        mapname = "group.byname"
-        try:
-            rv = yp_client_first(self.ctx, mapname,
-                                 &next_key, &next_keylen,
-                                 &out_value, &out_len)
-            while rv == 0:
-                retval = _make_gr(out_value.decode('utf-8'))
-                free(<void*>out_value)
-                free(<void*>first_key)
-                first_key = next_key
-                first_keylen = next_keylen
-                next_key = NULL
-                next_keylen = 0
-                yield retval
-                rv = yp_client_next(self.ctx, mapname,
-                                    first_key, first_keylen,
-                                    &next_key, &next_keylen,
-                                    &out_value, &out_len)
-        finally:
-            if first_key:
-                free(<void*>first_key)
-            if next_key:
-                free(<void*>next_key)
+        return self._get_entries("group.byname", _make_gr)
 
     def update_pwent(self, old_password, new_pwent):
         cdef passwd pwent_copy
