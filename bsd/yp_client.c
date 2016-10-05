@@ -6,8 +6,12 @@
 #include <string.h>
 #include <fcntl.h>
 
+#include <pwd.h>
+
 #include <netdb.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -213,7 +217,7 @@ yp_client_init(const char *domain, const char *server)
 
 	if (yp_client) {
 		// Okay, let's do the magic
-		context = calloc(1, sizeof(*retval));
+		context = calloc(1, sizeof(*context));
 		if (context == NULL) {
 			clnt_destroy(yp_client);
 		} else {
@@ -426,6 +430,48 @@ yp_client_next(void *ctx,
 	return rv;
 }
 
+/*
+ * This one is a bit of a weird function.  First, I'm not calling
+ * the RPC directly; instead, I'm using -lypclnt's function for changing
+ * the password.  Second, the new_pwent parameter is struct passwd.
+ * Note that if changing the password, it must be in its enrypted form here.
+ * (old_password is not encrypted.)
+ */
+int
+yp_client_update_pwent(void *ctx, const char *old_password, const struct passwd *new_pwent)
+{
+	yp_context_t *context = ctx;
+	ypclnt_t *ypclnt = NULL;
+	char numeric_host[INET_ADDRSTRLEN+1] = { 0 };
+	struct sockaddr_in *sin;
+	const char *map = "passwd.byname";
+
+	// Only IPv4 is supported for now
+	sin = (struct sockaddr_in*)&context->server_sockaddr;
+	if (inet_ntop(AF_INET, &sin->sin_addr,
+		      numeric_host, sizeof(numeric_host)) == NULL) {
+		return EINVAL;
+	}
+
+	ypclnt = ypclnt_new(context->domain, map, numeric_host);
+	if (ypclnt == NULL) {
+		fprintf(stderr, "Unable to create YP client context\n");
+		abort();
+	}
+	if (ypclnt_connect(ypclnt) == -1) {
+		ypclnt_free(ypclnt);
+		fprintf(stderr, "Unable to connect to YP server %s\n", numeric_host);
+		abort();
+	}
+	if (ypclnt_passwd(ypclnt, new_pwent, old_password) == -1) {
+		ypclnt_free(ypclnt);
+		fprintf(stderr, "Unable to change password entry\n");
+		abort();
+	}
+	ypclnt_free(ypclnt);
+	return 0;
+}
+
 #ifdef TEST
 int
 main(int ac, char **av)
@@ -453,7 +499,8 @@ main(int ac, char **av)
 		const char *first_key = NULL, *next_key = NULL;
 		size_t first_keylen, next_keylen, out_len;
 		int x;
-
+		struct passwd pwent = {};
+		
 		x = yp_client_match(ctx, map, user, strlen(user), 
 				    &out_val, &out_len);
 		if (x == 0) {
@@ -479,6 +526,17 @@ main(int ac, char **av)
 			first_keylen = next_keylen;
 			next_key = NULL;
 		}
+		printf("x = %d\n", x);
+		printf("Now trying to change password entry\n");
+		pwent.pw_name = "testuser";
+		pwent.pw_uid = 2000;
+		pwent.pw_gid = 2000;
+		pwent.pw_passwd = "";
+		pwent.pw_gecos = "Test user";
+		pwent.pw_dir = "/nonexistent";
+		pwent.pw_shell = "/bin/csh";
+		pwent.pw_class = "";
+		x = yp_client_update_pwent(ctx, "", &pwent);
 		printf("x = %d\n", x);
 	}
 	return 0;

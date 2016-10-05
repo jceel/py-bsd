@@ -1,6 +1,8 @@
 #ifndef _YP_H
 # define _YP_H
 
+struct passwd;
+
 /*
  * Return a context object to connect to the given
  * server for the given domain.
@@ -31,5 +33,9 @@ int yp_client_next(void *context, const char *inmap,
 		   const char *inkey, size_t inkeylen,
 		   const char **outkey, size_t *outkeylen,
 		   const char **outval, size_t *outvallen);
+
+int yp_client_update_pwent(void *ctx,
+			   const char *old_password, // Unencrypted!
+			   const struct passwd *new_pwent);
 
 #endif /* _YP_H */

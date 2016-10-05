@@ -8,20 +8,6 @@ from libc.string cimport strerror
 from libc.errno cimport *
 cimport defs
 
-cdef extern from "yp_client.h":
-    cdef extern void *yp_client_init(const char *domain, const char *server)
-    cdef extern void yp_client_close(void *context)
-    cdef extern int yp_client_match(void *context,
-                                    const char *inmap, const char *inkey, size_t inkeylen,
-                                    char **outval, size_t *outvallen)
-    cdef extern int yp_client_first(void *context, const char *inmap,
-                                    const char **outkey, size_t *outkeylen,
-                                    const char **outval, size_t *outvallen)
-    cdef extern int yp_client_next(void *context, const char *inmap,
-                                   const char *inkey, size_t inkeylen,
-                                   const char **outkey, size_t *outkeylen,
-                                   const char **outval, size_t *outvallen)
-                                    
 cdef extern from "pwd.h":
     ctypedef int time_t
     ctypedef int uid_t
@@ -40,7 +26,53 @@ cdef extern from "pwd.h":
         time_t	pw_expire
         int	pw_fields
         
-cdef _make_pwent(entry):
+cdef extern from "yp_client.h":
+    cdef extern void *yp_client_init(const char *domain, const char *server)
+    cdef extern void yp_client_close(void *context)
+    cdef extern int yp_client_match(void *context,
+                                    const char *inmap, const char *inkey, size_t inkeylen,
+                                    char **outval, size_t *outvallen)
+    cdef extern int yp_client_first(void *context, const char *inmap,
+                                    const char **outkey, size_t *outkeylen,
+                                    const char **outval, size_t *outvallen)
+    cdef extern int yp_client_next(void *context, const char *inmap,
+                                   const char *inkey, size_t inkeylen,
+                                   const char **outkey, size_t *outkeylen,
+                                   const char **outval, size_t *outvallen)
+    cdef extern int yp_client_update_pwent(void *context,
+                                           const char *old_password,
+                                           const passwd *pwent)
+class grp(object):
+    def __init__(self, gr_name=None, gr_passwd='*', gr_gid=None, gr_mem=[]):
+        self.gr_name = gr_name
+        self.gr_passwd = gr_passwd
+        self.gr_gid = gr_gid
+        if isinstance(gr_mem, list):
+            self.gr_mem = gr_mem
+        else:
+            self.gr_mem = [gr_mem]
+    def __repr__(self):
+        return "{}(gr_name='{}', gr_passwd='{}', gr_gid={}, gr_mem={})".format(
+            self.__class__.__name__,
+            self.gr_name, self.gr_passwd, self.gr_gid, self.gr_mem)
+    def __str__(self):
+        return "{}:{}:{}:{}".format(self.gr_name, self.gr_passwd, self.gr_gid,
+                                    ",".join(self.gr_mem))
+            
+def _make_pwent(pw):
+    return "{}:{}:{}:{}:{}:{}:{}".format(
+        pw.pw_name, pw.pw_passwd, pw.pw_uid,
+        pw.pw_gid, pw.pw_gecos, pw.pw_dir,
+        pw.pw_shell)
+
+def _make_gr(entry):
+    fields = entry.split(':')
+    return grp(gr_name=fields[0],
+               gr_passwd=fields[1],
+               gr_gid=fields[2],
+               gr_mem=fields[3].split(','))
+
+cdef _make_pw(entry):
     cdef passwd retval
     fields = entry.split(':')
     retval.pw_name = fields[0]
@@ -104,7 +136,7 @@ cdef class NIS(object):
                                  &next_key, &next_keylen,
                                  &out_value, &out_len)
             while rv == 0:
-                retval = _make_pwent(out_value.decode('utf-8'))
+                retval = _make_pw(out_value.decode('utf-8'))
                 free(<void*>out_value)
                 free(<void*>first_key)
                 first_key = next_key
@@ -138,5 +170,89 @@ cdef class NIS(object):
             mapname = "passwd.byuid"
             
         return self._getpw(mapname, str(uid))
+
+    def _getgr(self, mapname, keyvalue):
+        cdef char *gr_ent = NULL
+        cdef size_t gr_ent_len
+        
+        rv = yp_client_match(self.ctx, mapname, keyvalue, len(keyvalue), &gr_ent, &gr_ent_len)
+        if rv != 0:
+            raise OSError(rv, strerror(rv))
+        
+        retval = _make_gr(gr_ent.decode('utf-8'))
+        free(gr_ent)
+        if retval:
+            return retval
+        raise OSError(ENOENT, "Cannot find key {} in map {}".format(keyvalue, mapname))
+
+    def getgrnam(self, grpname):
+        if grpname is None:
+            raise ValueError("grpname must be defined")
+        return self._getgr("group.byname", grpname)
+
+    def getgrgid(self, guid):
+        return self._getgr("group.bygid", str(guid))
     
-    
+    def getgrent(self):
+        """
+        This is slightly different from the libc routine.
+        We simply call yp_client_first() for the proper map, and then
+        yield results until yp_client_next() returns an error.
+        """
+        cdef const char *first_key = NULL
+        cdef const char *next_key = NULL
+        cdef const char *out_value = NULL
+        cdef size_t first_keylen, next_keylen, out_len
+        
+        mapname = "group.byname"
+        try:
+            rv = yp_client_first(self.ctx, mapname,
+                                 &next_key, &next_keylen,
+                                 &out_value, &out_len)
+            while rv == 0:
+                retval = _make_gr(out_value.decode('utf-8'))
+                free(<void*>out_value)
+                free(<void*>first_key)
+                first_key = next_key
+                first_keylen = next_keylen
+                next_key = NULL
+                next_keylen = 0
+                yield retval
+                rv = yp_client_next(self.ctx, mapname,
+                                    first_key, first_keylen,
+                                    &next_key, &next_keylen,
+                                    &out_value, &out_len)
+        finally:
+            if first_key:
+                free(<void*>first_key)
+            if next_key:
+                free(<void*>next_key)
+
+    def update_pwent(self, old_password, new_pwent):
+        cdef passwd pwent_copy
+        pwent_copy.pw_name = new_pwent.pw_name
+        pwent_copy.pw_passwd = new_pwent.pw_passwd
+        pwent_copy.pw_uid = new_pwent.pw_uid
+        pwent_copy.pw_gid = new_pwent.pw_gid
+        pwent_copy.pw_gecos = new_pwent.pw_gecos
+        pwent_copy.pw_dir = new_pwent.pw_dir
+        pwent_copy.pw_shell = new_pwent.pw_shell
+        pwent_copy.pw_fields = 1
+
+        try:
+            pwent_copy.pw_change = new_pwent.pw_change
+        except:
+            pwent_copy.pw_change = 0
+        try:
+            pwent_copy.pw_class = new_pwent.pw_class
+            if pwent_copy.pw_class == NULL:
+                pwent_copy.pw_class = ""
+        except:
+            pwent_copy.pw_class = ""
+        try:
+            pwent_copy.pw_expire = new_pwent.pw_expire
+        except:
+            pwent_copy.pw_exire = 0
+
+        rv = yp_client_update_pwent(self.ctx, old_password, &pwent_copy)
+        return
