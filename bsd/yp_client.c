@@ -455,18 +455,15 @@ yp_client_update_pwent(void *ctx, const char *old_password, const struct passwd 
 
 	ypclnt = ypclnt_new(context->domain, map, numeric_host);
 	if (ypclnt == NULL) {
-		fprintf(stderr, "Unable to create YP client context\n");
-		abort();
+		return ENOMEM;
 	}
 	if (ypclnt_connect(ypclnt) == -1) {
 		ypclnt_free(ypclnt);
-		fprintf(stderr, "Unable to connect to YP server %s\n", numeric_host);
-		abort();
+		return ECONNREFUSED;
 	}
 	if (ypclnt_passwd(ypclnt, new_pwent, old_password) == -1) {
 		ypclnt_free(ypclnt);
-		fprintf(stderr, "Unable to change password entry\n");
-		abort();
+		return EPERM;
 	}
 	ypclnt_free(ypclnt);
 	return 0;
